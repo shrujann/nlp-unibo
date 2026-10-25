@@ -1,0 +1,7 @@
+name = "nlp-food-log"
+compatibility_date = "2024-01-01"
+
+[[d1_databases]]
+binding = "nlp_food_log"
+database_name = "nlp-food-log"
+database_id = "e7f32422-b61b-4262-a752-8318616907a6"

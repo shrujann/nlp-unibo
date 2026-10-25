@@ -1,0 +1,456 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Calorie Estimator</title>
+  <script src="https://cdn.tailwindcss.com/3.4.1"></script>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --border: #2a2d3e;
+      --text: #e2e8f0;
+      --muted: #64748b;
+      --accent: #6366f1;
+      --accent-hover: #4f52d4;
+      --green: #22c55e;
+      --yellow: #eab308;
+      --red: #ef4444;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: ui-sans-serif, system-ui, sans-serif;
+      min-height: 100vh;
+    }
+    #drop-zone {
+      border: 2px dashed var(--border);
+      transition: border-color .2s, background .2s;
+    }
+    #drop-zone.drag-over {
+      border-color: var(--accent);
+      background: rgba(99,102,241,.06);
+    }
+    .confidence-high  { background: rgba(34,197,94,.15);  color: #86efac; }
+    .confidence-mid   { background: rgba(234,179,8,.15);  color: #fde047; }
+    .confidence-low   { background: rgba(239,68,68,.15);  color: #fca5a5; }
+    input[type=number] {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 6px;
+      padding: 4px 8px;
+      width: 80px;
+      text-align: right;
+    }
+    input[type=number]:focus { outline: 2px solid var(--accent); border-color: transparent; }
+    select {
+      background: var(--bg);
+      border: 1px solid var(--accent);
+      color: var(--text);
+      border-radius: 6px;
+      padding: 4px 8px;
+      font-size: .875rem;
+      max-width: 220px;
+    }
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      padding: .6rem 1.4rem; border-radius: 8px; font-weight: 600;
+      cursor: pointer; border: none; transition: background .15s;
+    }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-primary:hover { background: var(--accent-hover); }
+    .btn-primary:disabled { opacity: .45; cursor: not-allowed; }
+    .btn-secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
+    .btn-secondary:hover { background: var(--border); }
+    .spinner {
+      width: 20px; height: 20px; border: 2px solid rgba(255,255,255,.2);
+      border-top-color: #fff; border-radius: 50%; animation: spin .7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
+    table { border-collapse: collapse; width: 100%; }
+    th { text-align: left; padding: .6rem 1rem; font-size: .75rem; text-transform: uppercase;
+         letter-spacing: .06em; color: var(--muted); border-bottom: 1px solid var(--border); }
+    td { padding: .65rem 1rem; border-bottom: 1px solid rgba(255,255,255,.04); vertical-align: middle; }
+    tr:last-child td { border-bottom: none; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 9999px; font-size: .7rem; font-weight: 600; }
+    .tag-ambiguous { background: rgba(234,179,8,.15); color: #fde047; font-size: .7rem; padding: 1px 6px; border-radius: 4px; }
+    #toast {
+      position: fixed; bottom: 2rem; left: 50%; transform: translateX(-50%);
+      padding: .75rem 1.5rem; border-radius: 10px; font-weight: 600; font-size: .95rem;
+      transition: opacity .3s; pointer-events: none;
+    }
+    #toast.show { opacity: 1; }
+    #toast.hide { opacity: 0; }
+    #toast.success { background: #166534; color: #86efac; }
+    #toast.error   { background: #7f1d1d; color: #fca5a5; }
+  </style>
+</head>
+<body>
+<div class="max-w-3xl mx-auto px-4 py-10">
+
+  <!-- Header -->
+  <div class="mb-8">
+    <h1 class="text-2xl font-bold text-white">Calorie Estimator</h1>
+    <p class="text-sm mt-1" style="color:var(--muted)">Upload a food photo — AI identifies ingredients, FatSecret verifies calories.</p>
+  </div>
+
+  <!-- Upload -->
+  <div class="card p-6 mb-6">
+    <div id="drop-zone" class="rounded-xl p-8 text-center cursor-pointer" onclick="document.getElementById('file-input').click()">
+      <div id="upload-placeholder">
+        <svg class="mx-auto mb-3" width="40" height="40" fill="none" viewBox="0 0 24 24" stroke="currentColor" style="color:var(--muted)">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5"/>
+        </svg>
+        <p class="font-medium text-white">Drop a food photo here or <span style="color:var(--accent)">browse</span></p>
+        <p class="text-xs mt-1" style="color:var(--muted)">JPEG, PNG, WebP up to 20MB</p>
+      </div>
+      <img id="preview" class="hidden mx-auto rounded-lg max-h-64 object-contain" alt="preview" />
+    </div>
+    <input id="file-input" type="file" accept="image/*" class="hidden" />
+    <div class="flex gap-3 mt-4 justify-end">
+      <button id="clear-btn" class="btn btn-secondary hidden" onclick="clearAll()">Clear</button>
+      <button id="analyze-btn" class="btn btn-primary" disabled onclick="analyze()">
+        <span id="analyze-label">Analyze</span>
+        <span id="analyze-spinner" class="hidden ml-2 spinner"></span>
+      </button>
+    </div>
+  </div>
+
+  <!-- Results -->
+  <div id="results-section" class="hidden">
+    <div class="card mb-4 overflow-hidden">
+      <div class="flex items-center justify-between px-5 py-3" style="border-bottom:1px solid var(--border)">
+        <h2 class="font-semibold text-white">Ingredients</h2>
+        <span class="text-xs" style="color:var(--muted)">Edit grams or pick a different FatSecret match</span>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Ingredient</th>
+            <th>Confidence</th>
+            <th>Grams</th>
+            <th>FatSecret match</th>
+            <th class="text-right">Calories</th>
+          </tr>
+        </thead>
+        <tbody id="ingredients-tbody"></tbody>
+      </table>
+    </div>
+
+    <!-- Total + Log -->
+    <div class="card p-5 flex items-center justify-between">
+      <div>
+        <p class="text-xs uppercase tracking-widest mb-1" style="color:var(--muted)">Estimated Total</p>
+        <p class="text-3xl font-bold text-white"><span id="total-calories">0</span> <span class="text-base font-normal" style="color:var(--muted)">kcal</span></p>
+      </div>
+      <button id="log-btn" class="btn btn-primary" onclick="logMeal()">
+        <span id="log-label">Log Meal</span>
+        <span id="log-spinner" class="hidden ml-2 spinner"></span>
+      </button>
+    </div>
+  </div>
+
+  <!-- Today's total banner (shown after logging) -->
+  <div id="today-banner" class="hidden card p-5 mt-4 flex items-center justify-between">
+    <div>
+      <p class="text-xs uppercase tracking-widest mb-1" style="color:var(--muted)">Today's Total</p>
+      <p class="text-2xl font-bold" style="color:var(--green)"><span id="today-total">0</span> kcal</p>
+    </div>
+    <button class="btn btn-secondary text-sm" onclick="loadMeals()">View history</button>
+  </div>
+
+  <!-- Meal history -->
+  <div id="history-section" class="hidden mt-6">
+    <h2 class="font-semibold text-white mb-3">Recent Meals</h2>
+    <div id="history-list" class="space-y-3"></div>
+  </div>
+
+</div>
+
+<div id="toast" class="hide"></div>
+
+<script>
+  // ── State ─────────────────────────────────────────────────────────────────
+  let imageBase64 = null;
+  let mediaType = "image/jpeg";
+  let currentResults = []; // [{ ingredient, food_match, alternatives }]
+
+  // ── File handling ─────────────────────────────────────────────────────────
+  const fileInput = document.getElementById("file-input");
+  const dropZone = document.getElementById("drop-zone");
+
+  fileInput.addEventListener("change", e => {
+    const file = e.target.files[0];
+    if (file) loadFile(file);
+  });
+
+  dropZone.addEventListener("dragover", e => { e.preventDefault(); dropZone.classList.add("drag-over"); });
+  dropZone.addEventListener("dragleave", () => dropZone.classList.remove("drag-over"));
+  dropZone.addEventListener("drop", e => {
+    e.preventDefault(); dropZone.classList.remove("drag-over");
+    const file = e.dataTransfer.files[0];
+    if (file && file.type.startsWith("image/")) loadFile(file);
+  });
+
+  function loadFile(file) {
+    mediaType = file.type || "image/jpeg";
+    const reader = new FileReader();
+    reader.onload = ev => {
+      const dataUrl = ev.target.result;
+      imageBase64 = dataUrl.split(",")[1];
+      document.getElementById("upload-placeholder").classList.add("hidden");
+      const preview = document.getElementById("preview");
+      preview.src = dataUrl;
+      preview.classList.remove("hidden");
+      document.getElementById("analyze-btn").disabled = false;
+      document.getElementById("clear-btn").classList.remove("hidden");
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function clearAll() {
+    imageBase64 = null;
+    currentResults = [];
+    fileInput.value = "";
+    document.getElementById("upload-placeholder").classList.remove("hidden");
+    document.getElementById("preview").classList.add("hidden");
+    document.getElementById("preview").src = "";
+    document.getElementById("analyze-btn").disabled = true;
+    document.getElementById("clear-btn").classList.add("hidden");
+    document.getElementById("results-section").classList.add("hidden");
+    document.getElementById("today-banner").classList.add("hidden");
+    document.getElementById("history-section").classList.add("hidden");
+  }
+
+  // ── Analyze ───────────────────────────────────────────────────────────────
+  async function analyze() {
+    if (!imageBase64) return;
+    setAnalyzing(true);
+    try {
+      const res = await fetch("/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image_base64: imageBase64, media_type: mediaType })
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || `Server error ${res.status}`);
+      }
+      const data = await res.json();
+      currentResults = data.results;
+      renderTable(currentResults);
+      document.getElementById("results-section").classList.remove("hidden");
+    } catch (e) {
+      showToast(e.message, "error");
+    } finally {
+      setAnalyzing(false);
+    }
+  }
+
+  function setAnalyzing(on) {
+    document.getElementById("analyze-btn").disabled = on;
+    document.getElementById("analyze-label").textContent = on ? "Analyzing…" : "Analyze";
+    document.getElementById("analyze-spinner").classList.toggle("hidden", !on);
+  }
+
+  // ── Table rendering ───────────────────────────────────────────────────────
+  function renderTable(results) {
+    const tbody = document.getElementById("ingredients-tbody");
+    tbody.innerHTML = "";
+
+    results.forEach((r, idx) => {
+      const { ingredient, food_match, alternatives } = r;
+      const tr = document.createElement("tr");
+
+      // Name cell
+      const nameTd = document.createElement("td");
+      nameTd.innerHTML = `<span class="font-medium text-white">${escHtml(ingredient.name)}</span>` +
+        (ingredient.notes ? `<p class="text-xs mt-0.5" style="color:var(--muted)">${escHtml(ingredient.notes)}</p>` : "");
+      tr.appendChild(nameTd);
+
+      // Confidence badge
+      const confTd = document.createElement("td");
+      const conf = ingredient.confidence;
+      const cls = conf >= 0.7 ? "confidence-high" : conf >= 0.45 ? "confidence-mid" : "confidence-low";
+      confTd.innerHTML = `<span class="badge ${cls}">${Math.round(conf * 100)}%</span>`;
+      tr.appendChild(confTd);
+
+      // Grams (editable)
+      const gramsTd = document.createElement("td");
+      const gramsInput = document.createElement("input");
+      gramsInput.type = "number";
+      gramsInput.min = "0";
+      gramsInput.step = "1";
+      gramsInput.value = ingredient.estimated_grams;
+      gramsInput.dataset.idx = idx;
+      gramsInput.addEventListener("input", () => updateCalories());
+      gramsTd.appendChild(gramsInput);
+      tr.appendChild(gramsTd);
+
+      // FatSecret match
+      const matchTd = document.createElement("td");
+      if (food_match) {
+        let html = "";
+        if (food_match.ambiguous && alternatives.length > 0) {
+          const opts = [food_match, ...alternatives]
+            .map((m, i) => `<option value="${i}" data-cal="${m.calories_per_100g}" data-name="${escHtml(m.food_name)}">${escHtml(m.food_name)} (${m.calories_per_100g} kcal/100g)</option>`)
+            .join("");
+          html = `<div><select data-idx="${idx}" onchange="onMatchChange(this)">${opts}</select>
+                  <span class="tag-ambiguous ml-1">ambiguous</span></div>
+                  <p class="text-xs mt-1" style="color:var(--muted)">${food_match.matched_serving}</p>`;
+        } else {
+          html = `<p class="text-sm text-white">${escHtml(food_match.food_name)}</p>
+                  <p class="text-xs mt-0.5" style="color:var(--muted)">${food_match.matched_serving} · ${food_match.calories_per_100g} kcal/100g</p>`;
+        }
+        matchTd.innerHTML = html;
+      } else {
+        matchTd.innerHTML = `<span class="text-xs" style="color:var(--muted)">No match found</span>`;
+      }
+      tr.appendChild(matchTd);
+
+      // Calories (computed)
+      const calTd = document.createElement("td");
+      calTd.className = "text-right font-mono font-semibold text-white";
+      calTd.dataset.idx = idx;
+      calTd.id = `cal-${idx}`;
+      tr.appendChild(calTd);
+
+      tbody.appendChild(tr);
+    });
+
+    updateCalories();
+  }
+
+  function onMatchChange(select) {
+    const idx = parseInt(select.dataset.idx);
+    const chosen = select.options[select.selectedIndex];
+    const cal = parseFloat(chosen.dataset.cal);
+    // Update the stored food_match for this ingredient
+    currentResults[idx].food_match = {
+      ...currentResults[idx].food_match,
+      calories_per_100g: cal,
+      food_name: chosen.dataset.name
+    };
+    updateCalories();
+  }
+
+  function updateCalories() {
+    let total = 0;
+    currentResults.forEach((r, idx) => {
+      const gramsInput = document.querySelector(`input[data-idx="${idx}"]`);
+      const grams = gramsInput ? parseFloat(gramsInput.value) || 0 : r.ingredient.estimated_grams;
+      const cal100 = r.food_match ? r.food_match.calories_per_100g : 0;
+      const cal = (grams * cal100) / 100;
+      total += cal;
+      const calCell = document.getElementById(`cal-${idx}`);
+      if (calCell) calCell.textContent = Math.round(cal) + " kcal";
+    });
+    document.getElementById("total-calories").textContent = Math.round(total);
+  }
+
+  // ── Log meal ─────────────────────────────────────────────────────────────
+  async function logMeal() {
+    const ingredients = currentResults
+      .filter(r => r.food_match)
+      .map((r, idx) => {
+        const gramsInput = document.querySelector(`input[data-idx="${idx}"]`);
+        const grams = gramsInput ? parseFloat(gramsInput.value) || 0 : r.ingredient.estimated_grams;
+        return {
+          name: r.ingredient.name,
+          grams,
+          calories_per_100g: r.food_match.calories_per_100g,
+          food_id: r.food_match.food_id
+        };
+      });
+
+    if (!ingredients.length) {
+      showToast("No matched ingredients to log", "error");
+      return;
+    }
+
+    setLogging(true);
+    try {
+      const res = await fetch("/confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ingredients })
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || `Error ${res.status}`);
+      }
+      const data = await res.json();
+      document.getElementById("today-total").textContent = Math.round(data.today_total);
+      document.getElementById("today-banner").classList.remove("hidden");
+      showToast(`Meal logged — ${Math.round(data.total_calories)} kcal`, "success");
+    } catch (e) {
+      showToast(e.message, "error");
+    } finally {
+      setLogging(false);
+    }
+  }
+
+  function setLogging(on) {
+    document.getElementById("log-btn").disabled = on;
+    document.getElementById("log-label").textContent = on ? "Logging…" : "Log Meal";
+    document.getElementById("log-spinner").classList.toggle("hidden", !on);
+  }
+
+  // ── History ────────────────────────────────────────────────────────────────
+  async function loadMeals() {
+    const section = document.getElementById("history-section");
+    const list = document.getElementById("history-list");
+    section.classList.remove("hidden");
+    list.innerHTML = `<p class="text-sm" style="color:var(--muted)">Loading…</p>`;
+
+    try {
+      const res = await fetch("/meals");
+      if (!res.ok) throw new Error(`Error ${res.status}`);
+      const meals = await res.json();
+
+      if (!meals.length) {
+        list.innerHTML = `<p class="text-sm" style="color:var(--muted)">No meals logged yet.</p>`;
+        return;
+      }
+
+      list.innerHTML = meals.map(m => {
+        const dt = new Date(m.created_at + "Z");
+        const fmt = dt.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+        const items = m.ingredients.map(i => `${i.name} (${i.grams}g)`).join(", ");
+        return `<div class="card p-4">
+          <div class="flex justify-between items-start">
+            <div>
+              <p class="font-medium text-white">${Math.round(m.total_calories)} kcal</p>
+              <p class="text-xs mt-1" style="color:var(--muted)">${escHtml(items)}</p>
+            </div>
+            <span class="text-xs shrink-0 ml-4" style="color:var(--muted)">${fmt}</span>
+          </div>
+        </div>`;
+      }).join("");
+    } catch (e) {
+      list.innerHTML = `<p class="text-sm" style="color:var(--red)">${e.message}</p>`;
+    }
+  }
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
+  function escHtml(str) {
+    return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+
+  let toastTimer = null;
+  function showToast(msg, type) {
+    const el = document.getElementById("toast");
+    el.textContent = msg;
+    el.className = `show ${type}`;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { el.classList.replace("show", "hide"); }, 3500);
+  }
+</script>
+</body>
+</html>
