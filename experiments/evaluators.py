@@ -9,15 +9,15 @@ Each evaluator receives (output, expected) where:
 
 def calorie_mae(output, expected) -> float:
     """Absolute error in kcal between prediction and ground truth."""
-    predicted = (output or {}).get("predicted_calories", 0)
-    ground_truth = (expected or {}).get("total_calories", 0)
+    predicted = float((output or {}).get("predicted_calories", 0))
+    ground_truth = float((expected or {}).get("total_calories", 0))
     return abs(predicted - ground_truth)
 
 
 def calorie_pct_error(output, expected) -> float:
     """Percentage error relative to ground truth total calories."""
-    predicted = (output or {}).get("predicted_calories", 0)
-    ground_truth = (expected or {}).get("total_calories", 0)
+    predicted = float((output or {}).get("predicted_calories", 0))
+    ground_truth = float((expected or {}).get("total_calories", 0))
     if not ground_truth:
         return 0.0
     return abs(predicted - ground_truth) / ground_truth * 100

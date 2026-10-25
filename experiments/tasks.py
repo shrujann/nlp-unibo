@@ -3,24 +3,41 @@ Task functions for each system under test.
 
 Each function receives a Phoenix Example and returns:
   {"predicted_calories": int, "ingredients": [{"name", "grams", "calories"}, ...]}
+
+All three systems use OpenRouter (OPENROUTER_API_KEY) — no separate API keys needed.
+
+Models used:
+  A  our-app       google/gemini-2.5-flash-lite  + FatSecret nutritional DB
+  B  gpt4o-mini    openai/gpt-4o-mini            direct estimation (~$0.165/M input)
+  C  gemini-flash  google/gemini-2.5-flash        direct estimation (~$0.30/M input)
 """
+import asyncio
 import base64
 import json
 import os
 
 from dotenv import load_dotenv
+from langchain_core.messages import HumanMessage
+from langchain_openai import ChatOpenAI
 
 load_dotenv()
 
 from backend.agents.vision import analyze_food_image
-from backend.config import OPENROUTER_BASE_URL, VISION_MODEL
+from backend.config import OPENROUTER_BASE_URL
 from backend.services import fatsecret
 
+# For the "direct" systems — same prompt, expect raw JSON back
 _DIRECT_PROMPT = (
     "Estimate the total calories in this meal and list every ingredient with its weight.\n"
     "Return ONLY valid JSON — no markdown, no extra text:\n"
     '{"total_calories": <number>, "ingredients": [{"name": "...", "grams": <number>, "calories": <number>}]}'
 )
+
+# Cheap OpenAI vision model via OpenRouter
+_GPT4O_MINI = "openai/gpt-4o-mini"
+
+# Full Gemini Flash (not lite) — same family as the app, different tier
+_GEMINI_FLASH = "google/gemini-2.5-flash"
 
 
 def _encode(path: str) -> tuple[str, str]:
@@ -28,9 +45,31 @@ def _encode(path: str) -> tuple[str, str]:
         return base64.b64encode(f.read()).decode(), "image/png"
 
 
+def _direct_llm(model: str) -> ChatOpenAI:
+    return ChatOpenAI(
+        model=model,
+        api_key=os.environ["OPENROUTER_API_KEY"],
+        base_url=OPENROUTER_BASE_URL,
+        max_tokens=1024,
+    )
+
+
+def _parse_direct_response(text: str) -> dict:
+    if "```" in text:
+        text = text.split("```")[1].lstrip("json").strip()
+    try:
+        data = json.loads(text)
+    except Exception:
+        return {"predicted_calories": 0, "ingredients": []}
+    return {
+        "predicted_calories": round(float(data.get("total_calories", 0))),
+        "ingredients": data.get("ingredients", []),
+    }
+
+
 # ── System A: our app (Gemini vision → FatSecret lookup) ──────────────────────
 
-async def our_app_task(example) -> dict:
+async def _our_app_task_async(example) -> dict:
     img_b64, mime = _encode(example.input["image_path"])
     ingredient_list = await analyze_food_image(img_b64, mime)
 
@@ -55,47 +94,15 @@ async def our_app_task(example) -> dict:
     return {"predicted_calories": round(total), "ingredients": details}
 
 
-# ── System B: GPT-4o direct (no FatSecret) ────────────────────────────────────
+def our_app_task(example) -> dict:
+    return asyncio.run(_our_app_task_async(example))
 
-async def gpt4o_task(example) -> dict:
-    from openai import AsyncOpenAI
 
+# ── System B: GPT-4o-mini direct via OpenRouter (no FatSecret) ────────────────
+
+async def _gpt4o_mini_task_async(example) -> dict:
     img_b64, mime = _encode(example.input["image_path"])
-    client = AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
-    response = await client.chat.completions.create(
-        model="gpt-4o",
-        response_format={"type": "json_object"},
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{img_b64}"}},
-                    {"type": "text", "text": _DIRECT_PROMPT},
-                ],
-            }
-        ],
-        max_tokens=1024,
-    )
-    data = json.loads(response.choices[0].message.content)
-    return {
-        "predicted_calories": round(float(data.get("total_calories", 0))),
-        "ingredients": data.get("ingredients", []),
-    }
-
-
-# ── System C: Gemini direct (no FatSecret) ────────────────────────────────────
-
-async def gemini_direct_task(example) -> dict:
-    from langchain_openai import ChatOpenAI
-    from langchain_core.messages import HumanMessage
-
-    img_b64, mime = _encode(example.input["image_path"])
-    llm = ChatOpenAI(
-        model=VISION_MODEL,
-        api_key=os.environ["OPENROUTER_API_KEY"],
-        base_url=OPENROUTER_BASE_URL,
-        max_tokens=1024,
-    )
+    llm = _direct_llm(_GPT4O_MINI)
     msg = HumanMessage(
         content=[
             {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{img_b64}"}},
@@ -103,18 +110,27 @@ async def gemini_direct_task(example) -> dict:
         ]
     )
     response = await llm.ainvoke([msg])
+    return _parse_direct_response(response.content)
 
-    text = response.content
-    # Strip markdown fences if the model wraps the JSON
-    if "```" in text:
-        text = text.split("```")[1].lstrip("json").strip()
 
-    try:
-        data = json.loads(text)
-    except Exception:
-        return {"predicted_calories": 0, "ingredients": []}
+def gpt4o_mini_task(example) -> dict:
+    return asyncio.run(_gpt4o_mini_task_async(example))
 
-    return {
-        "predicted_calories": round(float(data.get("total_calories", 0))),
-        "ingredients": data.get("ingredients", []),
-    }
+
+# ── System C: Gemini 2.5 Flash direct via OpenRouter (no FatSecret) ───────────
+
+async def _gemini_direct_task_async(example) -> dict:
+    img_b64, mime = _encode(example.input["image_path"])
+    llm = _direct_llm(_GEMINI_FLASH)
+    msg = HumanMessage(
+        content=[
+            {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{img_b64}"}},
+            {"type": "text", "text": _DIRECT_PROMPT},
+        ]
+    )
+    response = await llm.ainvoke([msg])
+    return _parse_direct_response(response.content)
+
+
+def gemini_direct_task(example) -> dict:
+    return asyncio.run(_gemini_direct_task_async(example))

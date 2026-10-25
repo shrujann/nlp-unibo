@@ -16,11 +16,15 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-import phoenix as px
-from phoenix.experiments import run_experiment
+from experiments.utils import ensure_phoenix
+
+ensure_phoenix()
+
+from phoenix.client import Client
+from phoenix.client.experiments import run_experiment
 
 from experiments.evaluators import calorie_mae, calorie_pct_error, ingredient_recall
-from experiments.tasks import gemini_direct_task, gpt4o_task, our_app_task
+from experiments.tasks import gemini_direct_task, gpt4o_mini_task, our_app_task
 from experiments.upload_dataset import DATASET_NAME
 
 EVALUATORS = [calorie_mae, calorie_pct_error, ingredient_recall]
@@ -32,9 +36,9 @@ EXPERIMENTS = [
         "Gemini vision + FatSecret nutritional lookup",
     ),
     (
-        "gpt4o-direct",
-        gpt4o_task,
-        "GPT-4o direct calorie estimation (no nutritional DB)",
+        "gpt4o-mini-direct",
+        gpt4o_mini_task,
+        "GPT-4o-mini direct calorie estimation via OpenRouter (no nutritional DB)",
     ),
     (
         "gemini-direct",
@@ -45,8 +49,8 @@ EXPERIMENTS = [
 
 
 def main() -> None:
-    client = px.Client()
-    dataset = client.get_dataset(name=DATASET_NAME)
+    client = Client()
+    dataset = client.datasets.get_dataset(dataset=DATASET_NAME)
     print(f"Running experiments on dataset '{DATASET_NAME}' ({len(dataset)} examples)\n")
 
     for name, task_fn, description in EXPERIMENTS:
@@ -57,6 +61,7 @@ def main() -> None:
             evaluators=EVALUATORS,
             experiment_name=name,
             experiment_description=description,
+            client=client,
         )
         print(f"   done\n")
 

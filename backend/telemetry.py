@@ -1,47 +1,42 @@
 import os
+from pathlib import Path
 
 from opentelemetry import trace
+from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import SpanProcessor, TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
 _tracer: trace.Tracer | None = None
 
-# Chainlit internal events — not useful for food-log analysis
-_SKIP_SPAN_NAMES = frozenset({
-    "GET /user",
-    "GET /project/settings",
-    "GET /auth/config",
-    "POST /message",
-    "project/transition",
-    "project/settings",
-    "ui/token_budget",
-    "connect",
-    "disconnect",
-})
-
-_SKIP_PREFIXES = (
-    "GET /",
-    "POST /",
-    "project/",
-    "ui/",
+# Only LangChain agent spans are useful — drop everything Chainlit/HTTP emits
+_KEEP_PREFIXES = (
+    "langchain",
+    "chat",
+    "llm",
+    "tool",
+    "chain",
+    "retriever",
+    "agent",
+    "food",
 )
 
 
 class _FilteringProcessor(SpanProcessor):
-    """Drops noisy Chainlit-internal spans before they reach the exporter."""
+    """Allows only LangChain/agent spans through to Phoenix."""
 
     def __init__(self, delegate: SpanProcessor) -> None:
         self._delegate = delegate
 
-    def _should_skip(self, name: str) -> bool:
-        return name in _SKIP_SPAN_NAMES or any(name.startswith(p) for p in _SKIP_PREFIXES)
+    def _should_keep(self, name: str) -> bool:
+        lower = name.lower()
+        return any(lower.startswith(p) for p in _KEEP_PREFIXES)
 
     def on_start(self, span, parent_context=None):
-        if not self._should_skip(span.name):
+        if self._should_keep(span.name):
             self._delegate.on_start(span, parent_context)
 
     def on_end(self, span):
-        if not self._should_skip(span.name):
+        if self._should_keep(span.name):
             self._delegate.on_end(span)
 
     def shutdown(self):
@@ -53,8 +48,8 @@ class _FilteringProcessor(SpanProcessor):
 
 def setup_phoenix() -> trace.Tracer:
     """
-    Start Phoenix locally and register the OTel tracer.
-    Call once at app startup. Subsequent calls return the same tracer.
+    Start Phoenix and wire up OTel tracing for LangChain spans only.
+    Call once at app startup; subsequent calls return the cached tracer.
     """
     global _tracer
     if _tracer is not None:
@@ -62,33 +57,36 @@ def setup_phoenix() -> trace.Tracer:
 
     import phoenix as px
     from openinference.instrumentation.langchain import LangChainInstrumentor
-    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-    from phoenix.otel import register
+    from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
+        OTLPSpanExporter as GRPCExporter,
+    )
+
+    # Persist to project-local .phoenix/ directory
+    phoenix_dir = Path(__file__).parent.parent / ".phoenix"
+    phoenix_dir.mkdir(exist_ok=True)
+    os.environ["PHOENIX_WORKING_DIR"] = str(phoenix_dir)
 
     px.launch_app()
 
-    tracer_provider: TracerProvider = register(
-        project_name=os.getenv("PHOENIX_PROJECT", "food-log"),
-        auto_instrument=False,
-    )
+    project = os.getenv("PHOENIX_PROJECT", "food-log")
 
-    # Replace Phoenix's default SimpleSpanProcessor with our filtering wrapper.
-    # Phoenix exports to http://localhost:6006/v1/traces over HTTP.
-    phoenix_exporter = OTLPSpanExporter(
-        endpoint="http://localhost:6006/v1/traces",
+    # Build the provider ourselves — avoids register() adding an unfiltered processor
+    provider = TracerProvider(
+        resource=Resource.create({"project.name": project})
     )
-    tracer_provider.add_span_processor(
-        _FilteringProcessor(SimpleSpanProcessor(phoenix_exporter))
+    grpc_exporter = GRPCExporter(endpoint="localhost:4317", insecure=True)
+    provider.add_span_processor(
+        _FilteringProcessor(BatchSpanProcessor(grpc_exporter))
     )
+    trace.set_tracer_provider(provider)
 
-    LangChainInstrumentor().instrument(tracer_provider=tracer_provider)
+    LangChainInstrumentor().instrument(tracer_provider=provider)
 
     _tracer = trace.get_tracer("food_log")
     return _tracer
 
 
 def get_tracer() -> trace.Tracer:
-    """Return the active tracer. setup_phoenix() must have been called first."""
     if _tracer is None:
         raise RuntimeError("call setup_phoenix() before get_tracer()")
     return _tracer
