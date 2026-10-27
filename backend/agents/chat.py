@@ -22,17 +22,27 @@ from backend.state import format_confirm_breakdown, results_to_confirm
 _tracer = trace.get_tracer("food_log.rerank")
 
 
-class _EditedList(BaseModel):
-    items: list[ConfirmIngredient]
+class _GramsUpdate(BaseModel):
+    name: str
+    grams: float
 
 
-_EDIT_SYSTEM = """You are a meal editor. Apply the edit instruction to the ingredient list and return the full updated list.
-Rules:
-- "remove X" / "no X" → delete that ingredient
-- "add X" / "add Xg of Y" → add new ingredient with a calorie estimate
-- "change X to Yg" / "X should be Yg" → update grams for that ingredient
-- Keep all other ingredients unchanged and return ALL of them
-Common kcal/100g estimates: egg=155, white rice=130, chicken breast=165, broccoli=35, salmon=208, pasta=131, olive oil=884, butter=717"""
+class _NewIngredient(BaseModel):
+    name: str
+    grams: float
+
+
+class _EditOperation(BaseModel):
+    removes: list[str] = []
+    grams_updates: list[_GramsUpdate] = []
+    adds: list[_NewIngredient] = []
+
+
+_EDIT_SYSTEM = """You are a meal editor. Parse the edit instruction and return only the operations to apply — do NOT estimate calories.
+- "remove X" / "no X" → add the ingredient name to removes
+- "change X to Yg" / "X should be Yg" → add {name, grams} to grams_updates
+- "add X" / "add Xg of Y" → add {name, grams} to adds (grams=0 if unspecified)
+Only include what changes; omit unchanged ingredients entirely."""
 
 
 async def _visual_rerank(
@@ -175,16 +185,51 @@ def make_tools(user_id: str) -> list:
             model=CHAT_MODEL,
             api_key=os.environ["OPENROUTER_API_KEY"],
             base_url=OPENROUTER_BASE_URL,
-            max_tokens=1024,
-        ).with_structured_output(_EditedList)
+            max_tokens=512,
+        ).with_structured_output(_EditOperation)
 
-        current_text = json.dumps([i.model_dump() for i in current], indent=2)
-        result: _EditedList = await llm.ainvoke([
+        current_names = json.dumps([i.name for i in current])
+        op: _EditOperation = await llm.ainvoke([
             SystemMessage(content=_EDIT_SYSTEM),
-            HumanMessage(content=f"Current ingredients:\n{current_text}\n\nEdit: {instruction}"),
+            HumanMessage(content=f"Current ingredient names: {current_names}\n\nEdit: {instruction}"),
         ])
-        cl.user_session.set("meal", result.items)
-        return format_confirm_breakdown(result.items)
+
+        removes_lower = {r.lower() for r in op.removes}
+        updated = [
+            i for i in current
+            if i.name.lower() not in removes_lower
+        ]
+
+        grams_map = {u.name.lower(): u.grams for u in op.grams_updates}
+        updated = [
+            ConfirmIngredient(
+                name=i.name,
+                grams=grams_map[i.name.lower()] if i.name.lower() in grams_map else i.grams,
+                calories_per_100g=i.calories_per_100g,
+                food_id=i.food_id,
+            )
+            for i in updated
+        ]
+
+        async def _lookup_add(new: _NewIngredient) -> ConfirmIngredient:
+            try:
+                best, _ = await fatsecret.search_and_match(new.name)
+                if best:
+                    return ConfirmIngredient(
+                        name=new.name,
+                        grams=new.grams if new.grams > 0 else 100.0,
+                        calories_per_100g=best.calories_per_100g,
+                        food_id=best.food_id,
+                    )
+            except Exception:
+                pass
+            return ConfirmIngredient(name=new.name, grams=new.grams if new.grams > 0 else 100.0, calories_per_100g=0.0)
+
+        added = list(await asyncio.gather(*[_lookup_add(a) for a in op.adds]))
+        final = updated + added
+
+        cl.user_session.set("meal", final)
+        return format_confirm_breakdown(final)
 
     @tool
     async def log_meal() -> str:

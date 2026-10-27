@@ -100,7 +100,7 @@ def our_app_task(example) -> dict:
 
 # ── System B: GPT-4o-mini direct via OpenRouter (no FatSecret) ────────────────
 
-async def _gpt4o_mini_task_async(example) -> dict:
+def gpt4o_mini_task(example) -> dict:
     img_b64, mime = _encode(example.input["image_path"])
     llm = _direct_llm(_GPT4O_MINI)
     msg = HumanMessage(
@@ -109,17 +109,13 @@ async def _gpt4o_mini_task_async(example) -> dict:
             {"type": "text", "text": _DIRECT_PROMPT},
         ]
     )
-    response = await llm.ainvoke([msg])
+    response = llm.invoke([msg])
     return _parse_direct_response(response.content)
-
-
-def gpt4o_mini_task(example) -> dict:
-    return asyncio.run(_gpt4o_mini_task_async(example))
 
 
 # ── System C: Gemini 2.5 Flash direct via OpenRouter (no FatSecret) ───────────
 
-async def _gemini_direct_task_async(example) -> dict:
+def gemini_direct_task(example) -> dict:
     img_b64, mime = _encode(example.input["image_path"])
     llm = _direct_llm(_GEMINI_FLASH)
     msg = HumanMessage(
@@ -128,9 +124,5 @@ async def _gemini_direct_task_async(example) -> dict:
             {"type": "text", "text": _DIRECT_PROMPT},
         ]
     )
-    response = await llm.ainvoke([msg])
+    response = llm.invoke([msg])
     return _parse_direct_response(response.content)
-
-
-def gemini_direct_task(example) -> dict:
-    return asyncio.run(_gemini_direct_task_async(example))

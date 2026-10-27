@@ -6,16 +6,14 @@ Run once after download_dataset.py:
   python experiments/upload_dataset.py
 """
 import csv
+import os
 from pathlib import Path
 
 import pandas as pd
 from dotenv import load_dotenv
 from phoenix.client import Client
 
-from experiments.utils import ensure_phoenix
-
 load_dotenv()
-ensure_phoenix()
 
 DATA_DIR = Path(__file__).parent / "data" / "nutrition5k"
 DATASET_NAME = "nutrition5k-50"
@@ -35,7 +33,10 @@ def _parse_ingredients(row: dict) -> list[dict]:
 
 
 def upload():
-    client = Client()
+    client = Client(
+        base_url=os.environ["PHOENIX_BASE_URL"],
+        api_key=os.environ["PHOENIX_API_KEY"],
+    )
 
     # Don't re-upload if already stored in Phoenix
     try:
